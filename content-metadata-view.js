@@ -8,6 +8,9 @@ if (!dv || !dv.current || !dv.current() || !dv.current().file) {
 }
 
 // ===== CONFIG =====
+// Capture input parameters (Expects an array of strings, e.g., ["status", "priority"])
+const CUSTOM_COLUMNS = (input && Array.isArray(input)) ? input : [];
+
 const HIDE_KEYS = ["stuffff"];
 const METADATA_EXCLUDE_KEYS = [
     "symbol", "link", "text", "outlinks", "tags", "section",
@@ -15,6 +18,7 @@ const METADATA_EXCLUDE_KEYS = [
     "path", "line", "lineCount", "position", "list",
     "subtasks", "real", "image", "parent", "file"
 ];
+
 
 // ===== HELPERS =====
 const isLink = (value) => value?.constructor?.name === "Link";
@@ -46,21 +50,6 @@ const appendTags = (value) => {
     return value;
 };
 
-// const cleanContent = (text) => {
-//     const lines = (text || "").split("\n");
-//     let result = [];
-
-//     for (let line of lines) {
-//         line = line.trim();
-//         if (!/^\s*(\w|-)+\s*::/.test(line) && !line.startsWith("%%")) {
-//             result.push(line.replace(/\s{2,}/g, " "));
-//         }
-//     }
-
-//     return result.join(" ") || "";
-// };
-
-
 const cleanContent = (text) => {
     const lines = (text || "").split("\n");
     let result = [];
@@ -73,40 +62,18 @@ const cleanContent = (text) => {
             continue;
         }
 
-        // Remove inline metadata (key:: value or [key:: value])
-        // Pattern 1: [key:: [[value]]] - bracketed key with wikilink value
+        // Remove inline metadata patterns
         line = line.replace(/\[[\w-]+::\s*\[\[([^\]]+)\]\]\]/g, '');
-
-        // Pattern 2: (key:: [[value]]) - parenthesized key with wikilink value
         line = line.replace(/\([\w-]+::\s*\[\[([^\]]+)\]\]\)/g, '');
-
-        // Pattern 3: [key:: value] where value contains markdown link [text](url)
         line = line.replace(/\[[\w-]+::\s*[^\]]*\[[^\]]+\]\([^)]+\)[^\]]*\]/g, '');
-
-        // Pattern 4: [key:: value] - general bracketed metadata
         line = line.replace(/\[[\w-]+::[^\]]*\]/g, '');
-
-        // Pattern 5: (key::value) - parenthesized without spaces
         line = line.replace(/\([\w-]+::[\w\d]+\)/g, '');
-
-        // Pattern 6: key:: value - unbracketed metadata (word-boundary aware)
         line = line.replace(/\b[\w-]+::\s*[^\s\[]+/g, '');
-
-
-        // // Remove wiki-style links [[link]] or [[link|alias]]
-        // line = line.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '');
-
-        // // Remove markdown links [text](url)
-        // line = line.replace(/\[([^\]]+)\]\([^)]+\)/g, '');
-
-        // // Clean up extra whitespace
-        // line = line.replace(/\s{2,}/g, " ").trim();
 
         if (line) {
             result.push(line);
         }
     }
-
     return result.join(" ") || "";
 };
 
@@ -165,6 +132,7 @@ const buildRelatedColumn = (internalLinks, metadata) => {
     return sections.join("<br>");
 };
 
+
 // ===== MAIN TABLE =====
 const currentFileID = normalizeToID(dv.current().file.name);
 
@@ -176,6 +144,22 @@ const rows = dv.pages()
         if (!isVisibleInCurrentFile(listItem, currentFileID)) return null;
 
         const content = cleanContent(listItem.text);
+
+        // --- PROCESS CUSTOM COLUMNS ---
+        const customColumnValues = CUSTOM_COLUMNS.map(colName => {
+            // Find key case-insensitively
+            const foundKey = Object.keys(metadata).find(k => k.toLowerCase() === colName.toLowerCase());
+
+            if (foundKey) {
+                // Get value and format it
+                const val = Array.from(metadata[foundKey]).map(appendTags).join(", ");
+                // Remove it from metadata so it doesn't appear in "Links & Metadata"
+                delete metadata[foundKey];
+                return val;
+            }
+            return ""; // Return empty string if key not found
+        });
+
         const internalLinks = getFilteredInternalLinks(listItem, metadata, currentFileID);
         const relatedColumn = buildRelatedColumn(internalLinks, metadata);
         const whereColumn = listItem.link;
@@ -184,7 +168,8 @@ const rows = dv.pages()
         const sortKey = filePage?.file?.mtime || filePage?.file?.ctime;
 
         return {
-            row: [content, relatedColumn, whereColumn],
+            // Unpack customColumnValues into the row array
+            row: [content, ...customColumnValues, relatedColumn, whereColumn],
             sortKey
         };
     })
@@ -192,8 +177,16 @@ const rows = dv.pages()
     .sort((a, b) => (b.sortKey < a.sortKey ? -1 : 1))
     .map((item) => item.row);
 
+
+// ===== RENDER =====
+
+// Dynamically build headers
+// Capitalize first letter of custom columns for display
+const customHeaders = CUSTOM_COLUMNS.map(c => c.charAt(0).toUpperCase() + c.slice(1));
+const tableHeaders = ["Content", ...customHeaders, "Links & Metadata", "Where"];
+
 if (!rows.length) {
     dv.paragraph("⚠️ No matching list items found for this file.");
 } else {
-    dv.table(["Content", "Links & Metadata", "Where"], rows);
+    dv.table(tableHeaders, rows);
 }
