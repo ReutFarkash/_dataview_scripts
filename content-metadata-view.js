@@ -14,6 +14,8 @@ let EXCLUDE_CURRENT_FILE = false;
 let AUTO_COLUMNS = false;
 let CUSTOM_COLUMNS = [];
 let LIMIT = 100;
+let SHOW_PAGES = true; // <--- NEW: Default True
+let SHOW_LISTS = true; // <--- NEW: Default True
 let DEBUG_MODE = false;
 
 if (typeof input !== "undefined") {
@@ -25,11 +27,12 @@ if (typeof input !== "undefined") {
         if (input.exclude_current !== undefined) EXCLUDE_CURRENT_FILE = !!input.exclude_current;
         if (input.auto_columns !== undefined) AUTO_COLUMNS = !!input.auto_columns;
         if (input.limit !== undefined) LIMIT = input.limit;
+        if (input.show_pages !== undefined) SHOW_PAGES = !!input.show_pages; // <--- Toggle
+        if (input.show_lists !== undefined) SHOW_LISTS = !!input.show_lists; // <--- Toggle
         if (input.debug !== undefined) DEBUG_MODE = !!input.debug;
     }
 }
 
-// Constants & Helpers
 const HIDE_KEYS = ["stuffff"];
 const METADATA_EXCLUDE_KEYS = ["symbol", "link", "text", "outlinks", "tags", "section", "children", "task", "checked", "annotated", "header", "path", "line", "lineCount", "position", "list", "subtasks", "real", "image", "parent", "file"];
 const isLink = (value) => value?.constructor?.name === "Link";
@@ -57,8 +60,6 @@ const formatValue = (value) => {
     }
     return value;
 };
-
-// ... (cleanContent & collectMetadata same as before) ...
 const cleanContent = (text) => {
     const lines = (text || "").split("\n");
     let result = [];
@@ -88,8 +89,6 @@ const collectMetadata = (listItem) => {
     Object.entries(metadata).forEach(([key, values]) => { if (values.size === 0) delete metadata[key]; });
     return metadata;
 };
-
-// Helper: Does a set of tags match the subject?
 const matchesSubjectTag = (tags, subject) => {
     if (!tags || tags.length === 0) return false;
     const searchTag = subject.toLowerCase();
@@ -98,42 +97,28 @@ const matchesSubjectTag = (tags, subject) => {
         return tag === searchTag || tag.startsWith(searchTag + "/");
     });
 };
-
-// Helper: Does a page link to the subject?
 const matchesSubjectLink = (page, subject) => {
     const subjectID = normalizeToID(subject);
     return page.file.outlinks.some(l => normalizeToID(l) === subjectID);
 };
 
-// <--- UPDATED VISIBILITY CHECKS --->
-
-// 1. Check List Items
+// Visibility Checks
 const isItemVisible = (listItem, subject, sourcePage) => {
     const rawSubject = String(subject).trim();
     if (rawSubject.startsWith("#")) {
-        // Tag Mode: Match item tags OR page tags (Implicit)
         if (listItem.tags && matchesSubjectTag(listItem.tags, rawSubject)) return true;
         if (sourcePage && sourcePage.file && matchesSubjectTag(sourcePage.file.tags, rawSubject)) return true;
         return false;
     }
-    // Link Mode
     const subjectID = normalizeToID(rawSubject);
     if (listItem.outlinks?.some((link) => normalizeToID(link) === subjectID)) return true;
     return normalizeToID(listItem.text).includes(subjectID);
 };
-
-// 2. Check Pages (NEW)
 const isPageVisible = (page, subject) => {
     const rawSubject = String(subject).trim();
-    if (rawSubject.startsWith("#")) {
-        // Tag Mode: Page MUST have the tag itself
-        return matchesSubjectTag(page.file.tags, rawSubject);
-    }
-    // Link Mode: Page MUST link to the subject
+    if (rawSubject.startsWith("#")) return matchesSubjectTag(page.file.tags, rawSubject);
     return matchesSubjectLink(page, rawSubject);
 };
-
-// ... (getFilteredInternalLinks & buildRelatedColumn same as before) ...
 const getFilteredInternalLinks = (listItem, metadata, subject) => {
     if (!listItem.outlinks) return [];
     const subjectID = normalizeToID(subject);
@@ -171,34 +156,20 @@ pages.forEach(page => {
     const sortKey = page.file.mtime || page.file.ctime;
 
     // A. Collect List Items
-    if (page.file.lists) {
+    if (SHOW_LISTS && page.file.lists) {
         page.file.lists.forEach((listItem) => {
             if (!isItemVisible(listItem, SUBJECT, page)) return;
-
             const metadata = collectMetadata(listItem);
             if (AUTO_COLUMNS) Object.keys(metadata).forEach(k => allKeys.add(k));
-
-            allItems.push({
-                type: "list",
-                item: listItem,
-                metadata: metadata,
-                sortKey: sortKey
-            });
+            allItems.push({ type: "list", item: listItem, metadata: metadata, sortKey: sortKey });
         });
     }
 
-    // B. Collect Page (If it matches directly)
-    if (isPageVisible(page, SUBJECT)) {
-        // For pages, we treat frontmatter as metadata
-        const metadata = collectMetadata(page); // Use generic collector on page object (works mostly same)
+    // B. Collect Page
+    if (SHOW_PAGES && isPageVisible(page, SUBJECT)) {
+        const metadata = collectMetadata(page);
         if (AUTO_COLUMNS) Object.keys(metadata).forEach(k => allKeys.add(k));
-
-        allItems.push({
-            type: "page",
-            item: page,
-            metadata: metadata,
-            sortKey: sortKey
-        });
+        allItems.push({ type: "page", item: page, metadata: metadata, sortKey: sortKey });
     }
 });
 
@@ -209,19 +180,15 @@ const rows = allItems
     .slice(0, LIMIT)
     .map(({ type, item, metadata }) => {
         let content, whereColumn, internalLinks;
-
         if (type === "list") {
             content = cleanContent(item.text);
-            whereColumn = item.link; // Link to the list item
+            whereColumn = item.link;
             internalLinks = getFilteredInternalLinks(item, metadata, SUBJECT);
         } else {
-            // It's a Page
-            content = `📄 **${item.file.link}**`; // Render as bold file link
-            whereColumn = item.file.folder; // Show folder as location
+            content = `📄 **${item.file.link}**`;
+            whereColumn = item.file.folder;
             internalLinks = item.file.outlinks.filter(l => normalizeToID(l) !== normalizeToID(SUBJECT));
         }
-
-        // Columns Logic (Shared)
         const columnValues = displayColumns.map(colKey => {
             const foundKey = Object.keys(metadata).find(k => k.toLowerCase() === colKey.toLowerCase());
             if (foundKey && metadata[foundKey]) {
@@ -231,13 +198,10 @@ const rows = allItems
             }
             return "";
         });
-
         const relatedColumn = buildRelatedColumn(internalLinks, metadata);
-
         return [content, ...columnValues, relatedColumn, whereColumn];
     });
 
-// ===== RENDER =====
 const colHeaders = displayColumns.map(c => c.charAt(0).toUpperCase() + c.slice(1));
 const tableHeaders = ["Content", ...colHeaders, "Links & Metadata", "Where"];
 
