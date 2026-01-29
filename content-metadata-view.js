@@ -14,7 +14,6 @@ let CUSTOM_COLUMNS = [];
 let SUBJECT = dv.current().file.name;
 let EXCLUDE_FOLDERS = ["_utils"];
 let EXCLUDE_CURRENT_FILE = false;
-let DEBUG_MODE = false; // Default off
 
 // Input Parsing
 if (typeof input !== "undefined") {
@@ -26,19 +25,10 @@ if (typeof input !== "undefined") {
         if (input.exclude_folders !== undefined) {
             EXCLUDE_FOLDERS = Array.isArray(input.exclude_folders) ? input.exclude_folders : [input.exclude_folders];
         }
-        if (input.exclude_current !== undefined) EXCLUDE_CURRENT_FILE = !!input.exclude_current;
-        if (input.debug !== undefined) DEBUG_MODE = !!input.debug;
+        if (input.exclude_current !== undefined) {
+            EXCLUDE_CURRENT_FILE = !!input.exclude_current;
+        }
     }
-}
-
-if (DEBUG_MODE) {
-    console.group("🔍 Content Metadata View Debug");
-    console.log("Configuration:", {
-        subject: SUBJECT,
-        excludeFolders: EXCLUDE_FOLDERS,
-        excludeCurrent: EXCLUDE_CURRENT_FILE,
-        currentFilePath: dv.current().file.path
-    });
 }
 
 const HIDE_KEYS = ["stuffff"];
@@ -162,13 +152,18 @@ const buildRelatedColumn = (internalLinks, metadata) => {
 // ===== MAIN EXECUTION =====
 
 // 1. Build Source Query String
+// We start with "" (everything)
+// Then append exclusions: -"Folder/Name" AND -"File/Path.md"
 let sourceParts = [];
 
+// Add Folder Exclusions
 EXCLUDE_FOLDERS.forEach(folder => {
+    // Escape quotes in folder names just in case
     const safeFolder = folder.replace(/"/g, '\\"');
     sourceParts.push(`-"${safeFolder}"`);
 });
 
+// Add Current File Exclusion
 if (EXCLUDE_CURRENT_FILE) {
     const currentPath = dv.current().file.path;
     const safePath = currentPath.replace(/"/g, '\\"');
@@ -177,10 +172,8 @@ if (EXCLUDE_CURRENT_FILE) {
 
 const sourceQuery = sourceParts.length > 0 ? sourceParts.join(" AND ") : "";
 
-if (DEBUG_MODE) {
-    console.log("Source Query Generated:", sourceQuery || "(All Pages)");
-}
-
+// 2. Fetch Pages using the Source Query
+// This relies on Dataview's internal index which is more robust than JS string comparison
 const rows = dv.pages(sourceQuery)
     .flatMap((page) => page.file.lists)
     .map((listItem) => {
@@ -216,10 +209,6 @@ const rows = dv.pages(sourceQuery)
     .sort((a, b) => (b.sortKey < a.sortKey ? -1 : 1))
     .map((item) => item.row);
 
-if (DEBUG_MODE) {
-    console.log("Final Rows Count:", rows.length);
-    console.groupEnd();
-}
 
 // ===== RENDER =====
 const customHeaders = CUSTOM_COLUMNS.map(c => c.charAt(0).toUpperCase() + c.slice(1));
