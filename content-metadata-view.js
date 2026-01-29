@@ -10,24 +10,25 @@ if (!dv.current || !dv.current() || !dv.current().file) {
 }
 
 // ===== CONFIG =====
-let CUSTOM_COLUMNS = [];
 let SUBJECT = dv.current().file.name;
 let EXCLUDE_FOLDERS = ["_utils"];
 let EXCLUDE_CURRENT_FILE = false;
+let AUTO_COLUMNS = false; // Default: Bundled Metadata
+let CUSTOM_COLUMNS = []; // For manual columns
 
 // Input Parsing
 if (typeof input !== "undefined") {
     if (Array.isArray(input)) {
         CUSTOM_COLUMNS = input;
     } else if (typeof input === "object" && input !== null) {
-        if (input.columns && Array.isArray(input.columns)) CUSTOM_COLUMNS = input.columns;
         if (input.subject) SUBJECT = input.subject;
+        if (input.columns && Array.isArray(input.columns)) CUSTOM_COLUMNS = input.columns;
+
         if (input.exclude_folders !== undefined) {
             EXCLUDE_FOLDERS = Array.isArray(input.exclude_folders) ? input.exclude_folders : [input.exclude_folders];
         }
-        if (input.exclude_current !== undefined) {
-            EXCLUDE_CURRENT_FILE = !!input.exclude_current;
-        }
+        if (input.exclude_current !== undefined) EXCLUDE_CURRENT_FILE = !!input.exclude_current;
+        if (input.auto_columns !== undefined) AUTO_COLUMNS = !!input.auto_columns;
     }
 }
 
@@ -151,68 +152,87 @@ const buildRelatedColumn = (internalLinks, metadata) => {
 
 // ===== MAIN EXECUTION =====
 
-// 1. Build Source Query String
-// We start with "" (everything)
-// Then append exclusions: -"Folder/Name" AND -"File/Path.md"
+// 1. Build Source Query
 let sourceParts = [];
-
-// Add Folder Exclusions
-EXCLUDE_FOLDERS.forEach(folder => {
-    // Escape quotes in folder names just in case
-    const safeFolder = folder.replace(/"/g, '\\"');
-    sourceParts.push(`-"${safeFolder}"`);
-});
-
-// Add Current File Exclusion
+EXCLUDE_FOLDERS.forEach(folder => sourceParts.push(`-"${folder.replace(/"/g, '\\"')}"`));
 if (EXCLUDE_CURRENT_FILE) {
-    const currentPath = dv.current().file.path;
-    const safePath = currentPath.replace(/"/g, '\\"');
-    sourceParts.push(`-"${safePath}"`);
+    sourceParts.push(`-"${dv.current().file.path.replace(/"/g, '\\"')}"`);
 }
-
 const sourceQuery = sourceParts.length > 0 ? sourceParts.join(" AND ") : "";
 
-// 2. Fetch Pages using the Source Query
-// This relies on Dataview's internal index which is more robust than JS string comparison
-const rows = dv.pages(sourceQuery)
-    .flatMap((page) => page.file.lists)
-    .map((listItem) => {
 
-        if (!isVisible(listItem, SUBJECT)) return null;
+// 2. Fetch & Process
+const allItems = [];
+const allKeys = new Set();
+
+dv.pages(sourceQuery)
+    .flatMap((page) => page.file.lists)
+    .forEach((listItem) => {
+        if (!isVisible(listItem, SUBJECT)) return;
 
         const metadata = collectMetadata(listItem);
-        const content = cleanContent(listItem.text);
 
-        const customColumnValues = CUSTOM_COLUMNS.map(colName => {
-            const foundKey = Object.keys(metadata).find(k => k.toLowerCase() === colName.toLowerCase());
-            if (foundKey) {
+        // If Auto-Columns is ON, record keys
+        if (AUTO_COLUMNS) {
+            Object.keys(metadata).forEach(k => allKeys.add(k));
+        }
+
+        const filePage = listItem.file?.link ? dv.page(listItem.file.link.path) : null;
+        const sortKey = filePage?.file?.mtime || filePage?.file?.ctime;
+
+        allItems.push({
+            item: listItem,
+            metadata: metadata,
+            sortKey: sortKey
+        });
+    });
+
+// 3. Define Columns Logic
+let displayColumns = [];
+if (AUTO_COLUMNS) {
+    displayColumns = Array.from(allKeys).sort((a, b) => a.localeCompare(b));
+} else {
+    displayColumns = CUSTOM_COLUMNS; // Manually defined or empty
+}
+
+// 4. Build Rows
+const rows = allItems
+    .sort((a, b) => (b.sortKey < a.sortKey ? -1 : 1))
+    .map(({ item, metadata }) => {
+        const content = cleanContent(item.text);
+
+        // A. Custom / Auto Columns
+        const columnValues = displayColumns.map(colKey => {
+            // Find key case-insensitively
+            const foundKey = Object.keys(metadata).find(k => k.toLowerCase() === colKey.toLowerCase());
+
+            if (foundKey && metadata[foundKey]) {
                 const val = Array.from(metadata[foundKey]).map(appendTags).join(", ");
+                // If manual or auto, we generally "consume" the metadata so it doesn't duplicate
+                // But for "Bundled" view (default), we only consume if it was explicitly asked for
                 delete metadata[foundKey];
                 return val;
             }
             return "";
         });
 
-        const internalLinks = getFilteredInternalLinks(listItem, metadata, SUBJECT);
+        // B. Remaining Metadata & Links
+        const internalLinks = getFilteredInternalLinks(item, metadata, SUBJECT);
+
+        // If AUTO_COLUMNS is true, `metadata` will be empty (all keys consumed)
+        // If AUTO_COLUMNS is false, `metadata` will contain everything NOT in CUSTOM_COLUMNS
         const relatedColumn = buildRelatedColumn(internalLinks, metadata);
-        const whereColumn = listItem.link;
 
-        const filePage = listItem.file?.link ? dv.page(listItem.file.link.path) : null;
-        const sortKey = filePage?.file?.mtime || filePage?.file?.ctime;
+        const whereColumn = item.link;
 
-        return {
-            row: [content, ...customColumnValues, relatedColumn, whereColumn],
-            sortKey
-        };
-    })
-    .filter((item) => item !== null)
-    .sort((a, b) => (b.sortKey < a.sortKey ? -1 : 1))
-    .map((item) => item.row);
+        return [content, ...columnValues, relatedColumn, whereColumn];
+    });
 
 
 // ===== RENDER =====
-const customHeaders = CUSTOM_COLUMNS.map(c => c.charAt(0).toUpperCase() + c.slice(1));
-const tableHeaders = ["Content", ...customHeaders, "Links & Metadata", "Where"];
+// Dynamic Headers
+const colHeaders = displayColumns.map(c => c.charAt(0).toUpperCase() + c.slice(1));
+const tableHeaders = ["Content", ...colHeaders, "Links & Metadata", "Where"];
 
 if (!rows.length) {
     dv.paragraph(`⚠️ No list items found for: **${SUBJECT}**`);
