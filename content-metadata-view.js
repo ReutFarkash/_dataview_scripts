@@ -1,6 +1,6 @@
 // _utils/_dataview_scripts/content-metadata-view.js
 
-// 1. SILENT GUARD
+// ... (Standard Setup) ...
 if (typeof dv === "undefined") return;
 if (!dv.current || !dv.current() || !dv.current().file) {
     dv.paragraph("⚠️ Dataview current file context not ready.");
@@ -14,8 +14,8 @@ let EXCLUDE_CURRENT_FILE = false;
 let AUTO_COLUMNS = false;
 let CUSTOM_COLUMNS = [];
 let LIMIT = 100;
-let SHOW_PAGES = true; // <--- NEW: Default True
-let SHOW_LISTS = true; // <--- NEW: Default True
+let SHOW_PAGES = true;
+let SHOW_LISTS = true;
 let DEBUG_MODE = false;
 
 if (typeof input !== "undefined") {
@@ -27,12 +27,13 @@ if (typeof input !== "undefined") {
         if (input.exclude_current !== undefined) EXCLUDE_CURRENT_FILE = !!input.exclude_current;
         if (input.auto_columns !== undefined) AUTO_COLUMNS = !!input.auto_columns;
         if (input.limit !== undefined) LIMIT = input.limit;
-        if (input.show_pages !== undefined) SHOW_PAGES = !!input.show_pages; // <--- Toggle
-        if (input.show_lists !== undefined) SHOW_LISTS = !!input.show_lists; // <--- Toggle
+        if (input.show_pages !== undefined) SHOW_PAGES = !!input.show_pages;
+        if (input.show_lists !== undefined) SHOW_LISTS = !!input.show_lists;
         if (input.debug !== undefined) DEBUG_MODE = !!input.debug;
     }
 }
 
+// ... (Helpers remain same) ...
 const HIDE_KEYS = ["stuffff"];
 const METADATA_EXCLUDE_KEYS = ["symbol", "link", "text", "outlinks", "tags", "section", "children", "task", "checked", "annotated", "header", "path", "line", "lineCount", "position", "list", "subtasks", "real", "image", "parent", "file"];
 const isLink = (value) => value?.constructor?.name === "Link";
@@ -89,6 +90,7 @@ const collectMetadata = (listItem) => {
     Object.entries(metadata).forEach(([key, values]) => { if (values.size === 0) delete metadata[key]; });
     return metadata;
 };
+
 const matchesSubjectTag = (tags, subject) => {
     if (!tags || tags.length === 0) return false;
     const searchTag = subject.toLowerCase();
@@ -97,28 +99,53 @@ const matchesSubjectTag = (tags, subject) => {
         return tag === searchTag || tag.startsWith(searchTag + "/");
     });
 };
-const matchesSubjectLink = (page, subject) => {
-    const subjectID = normalizeToID(subject);
-    return page.file.outlinks.some(l => normalizeToID(l) === subjectID);
+
+// <--- FIX: Helper to get Frontmatter Tags Only --->
+// Dataview 'file.tags' includes inline tags. We want strict page-level tags.
+const getPageTags = (page) => {
+    if (!page || !page.file) return [];
+    // Prefer 'etags' (Explicit Tags) if available, otherwise frontmatter.tags
+    if (page.file.etags) return page.file.etags;
+    if (page.file.frontmatter && page.file.frontmatter.tags) {
+        const fmTags = page.file.frontmatter.tags;
+        return Array.isArray(fmTags) ? fmTags.map(t => "#" + t.replace(/^#/, "")) : [];
+    }
+    return [];
 };
 
-// Visibility Checks
+
+// 1. Check List Items (UPDATED)
 const isItemVisible = (listItem, subject, sourcePage) => {
     const rawSubject = String(subject).trim();
     if (rawSubject.startsWith("#")) {
+        // A. Explicit Item Tag
         if (listItem.tags && matchesSubjectTag(listItem.tags, rawSubject)) return true;
-        if (sourcePage && sourcePage.file && matchesSubjectTag(sourcePage.file.tags, rawSubject)) return true;
+
+        // B. Implicit Page Tag (Strict Frontmatter Only)
+        // If the FILE has the tag in frontmatter, we assume all lists belong to it.
+        const pageTags = getPageTags(sourcePage);
+        if (pageTags && matchesSubjectTag(pageTags, rawSubject)) return true;
+
         return false;
     }
+    // Link Mode
     const subjectID = normalizeToID(rawSubject);
     if (listItem.outlinks?.some((link) => normalizeToID(link) === subjectID)) return true;
     return normalizeToID(listItem.text).includes(subjectID);
 };
+
+// 2. Check Pages (UPDATED)
 const isPageVisible = (page, subject) => {
     const rawSubject = String(subject).trim();
-    if (rawSubject.startsWith("#")) return matchesSubjectTag(page.file.tags, rawSubject);
-    return matchesSubjectLink(page, rawSubject);
+    if (rawSubject.startsWith("#")) {
+        // Tag Mode: Page MUST have the tag in FRONTMATTER
+        return matchesSubjectTag(getPageTags(page), rawSubject);
+    }
+    // Link Mode: Page MUST link to the subject
+    const subjectID = normalizeToID(rawSubject);
+    return page.file.outlinks.some(l => normalizeToID(l) === subjectID);
 };
+
 const getFilteredInternalLinks = (listItem, metadata, subject) => {
     if (!listItem.outlinks) return [];
     const subjectID = normalizeToID(subject);
